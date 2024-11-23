@@ -85,7 +85,17 @@ Example output:
 </review>
 \`\`\`
 
-Note: The 'comment' and 'describe' tags should elucidate the advice and why it’s given, while the 'code' tag hosts the recommended code snippet within proper GitHub Markdown syntax. The 'type' defines the suggestion's category such as performance, security, readability, etc.`;
+Note: The 'comment' and 'describe' tags should elucidate the advice and why it’s given, while the 'code' tag hosts the recommended code snippet within proper GitHub Markdown syntax. The 'type' defines the suggestion's category such as performance, security, readability, etc.
+
+If provided, you'll also see similar code contexts from the repository that might be relevant to your review. Consider these patterns and conventions when making suggestions.
+
+Similar code contexts will be provided in this format:
+\`\`\`
+File: path/to/file.ts
+Content:
+... code content ...
+\`\`\`
+`;
 
 export const PR_SUGGESTION_TEMPLATE = `{COMMENT}
 {ISSUE_LINK}
@@ -120,10 +130,21 @@ export const buildSuggestionPrompt = (file: PRFile) => {
 };
 
 export const buildPatchPrompt = (file: PRFile) => {
+  let prompt = `## ${file.filename}\n\n`;
+
+  // Add similar code contexts if available
+  if (file.codeContext) {
+    prompt += "\nSimilar code patterns found in repository:\n";
+    file.codeContext.forEach((context) => {
+      prompt += `\nFile: ${context.path}\n\`\`\`\n${context.content}\n\`\`\`\n`;
+    });
+    prompt += "\n";
+  }
+
   if (file.old_contents == null) {
-    return rawPatchStrategy(file);
+    return prompt + rawPatchStrategy(file);
   } else {
-    return smarterContextPatchStrategy(file);
+    return prompt + smarterContextPatchStrategy(file);
   }
 };
 

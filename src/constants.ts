@@ -24,6 +24,10 @@ export interface PRFile {
   patchTokenLength?: number;
   old_contents?: string;
   current_contents?: string;
+  codeContext?: Array<{
+    content: string;
+    path: string;
+  }>;
 }
 
 export interface BuilderResponse {

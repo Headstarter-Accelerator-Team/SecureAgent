@@ -2,6 +2,7 @@ import { Octokit } from "@octokit/rest";
 import { WebhookEventMap } from "@octokit/webhooks-definitions/schema";
 import { ChatCompletionMessageParam } from "groq-sdk/resources/chat/completions";
 import * as xml2js from "xml2js";
+import { RepositoryEmbedder } from "./embeddings/repository";
 import type {
   BranchDetails,
   BuilderResponse,
@@ -81,7 +82,9 @@ const filterFile = (file: PRFile) => {
   }
   const extension = splitFilename.pop()?.toLowerCase();
   if (extension && extensionsToIgnore.has(extension)) {
-    console.log(`Filtering out file with ignored extension: ${file.filename} (.${extension})`);
+    console.log(
+      `Filtering out file with ignored extension: ${file.filename} (.${extension})`
+    );
     return false;
   }
   return true;
@@ -513,11 +516,33 @@ export const processPullRequest = async (
   files: PRFile[],
   includeSuggestions = false
 ) => {
+  // Create repository embedder
+  const repoEmbedder = new RepositoryEmbedder(octokit);
+
+  // Embed the entire repository
+  await repoEmbedder.embedRepository(
+    payload.repository.owner.login,
+    payload.repository.name
+  );
+
+  // For each file being reviewed, get relevant context
+  for (const file of files) {
+    if (file.patch) {
+      // Search for similar code contexts
+      const similarCode = await repoEmbedder.similaritySearch(file.patch);
+      file.codeContext = similarCode.map((doc) => ({
+        content: doc.pageContent,
+        path: doc.metadata.path,
+      }));
+    }
+  }
   console.dir({ files }, { depth: null });
   const filteredFiles = files.filter((file) => filterFile(file));
   console.dir({ filteredFiles }, { depth: null });
   if (filteredFiles.length == 0) {
-    console.log("Nothing to comment on, all files were filtered out. The PR Agent does not support the following file types: pdf, png, jpg, jpeg, gif, mp4, mp3, md, json, env, toml, svg, package-lock.json, yarn.lock, .gitignore, package.json, tsconfig.json, poetry.lock, readme.md");
+    console.log(
+      "Nothing to comment on, all files were filtered out. The PR Agent does not support the following file types: pdf, png, jpg, jpeg, gif, mp4, mp3, md, json, env, toml, svg, package-lock.json, yarn.lock, .gitignore, package.json, tsconfig.json, poetry.lock, readme.md"
+    );
     return {
       review: null,
       suggestions: [],

@@ -114,18 +114,25 @@ export const getGitFile = async (
         owner: payload.repository.owner.login,
         repo: payload.repository.name,
         path: filepath,
-        ref: branch.name, // specify the branch name here
+        ref: branch.name,
         headers: {
           "X-GitHub-Api-Version": "2022-11-28",
         },
       }
     );
-    //@ts-ignore
+
+    if (
+      Array.isArray(response.data) ||
+      response.data.type !== "file" ||
+      !("content" in response.data)
+    ) {
+      throw new Error("Not a file or no content available");
+    }
+
     const decodedContent = Buffer.from(
       response.data.content,
       "base64"
     ).toString("utf8");
-    //@ts-ignore
     return { content: decodedContent, sha: response.data.sha };
   } catch (exc) {
     if (exc.status === 404) {
