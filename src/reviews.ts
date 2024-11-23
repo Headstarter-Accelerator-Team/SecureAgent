@@ -7,6 +7,10 @@ import {
 } from "./constants";
 import { Octokit } from "@octokit/rest";
 import { WebhookEventMap } from "@octokit/webhooks-definitions/schema";
+import { Pinecone } from "@pinecone-database/pinecone";
+import { Document } from "langchain/document";
+import { RecursiveCharacterTextSplitter } from "langchain/text_splitter";
+import { HuggingFaceTransformersEmbeddings } from "@langchain/community/embeddings/hf_transformers";
 
 const postGeneralReviewComment = async (
   octokit: Octokit,
@@ -125,6 +129,13 @@ export const getGitFile = async (
       response.data.content,
       "base64"
     ).toString("utf8");
+
+    // After getting the file content, store it in Pinecone
+    await storeCodeInPinecone(filepath, decodedContent, {
+      owner: payload.repository.owner.login,
+      repo: payload.repository.name,
+    });
+
     //@ts-ignore
     return { content: decodedContent, sha: response.data.sha };
   } catch (exc) {
@@ -213,4 +224,96 @@ export const createBranch = async (
     console.log(exc);
   }
   return branchDetails;
+};
+
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const PINECONE_API_KEY = process.env.PINECONE_API_KEY;
+const PINECONE_ENVIRONMENT = process.env.PINECONE_ENVIRONMENT;
+
+const pinecone = new Pinecone({
+  apiKey: PINECONE_API_KEY,
+});
+
+const embedder = new HuggingFaceTransformersEmbeddings({
+  modelName: "Xenova/all-MiniLM-L6-v2",
+});
+// Function to store code in Pinecone
+const storeCodeInPinecone = async (
+  filepath: string,
+  content: string,
+  repoInfo: { owner: string; repo: string }
+) => {
+  const index = pinecone.Index("code-embeddings");
+
+  // Split code into chunks
+  const splitter = new RecursiveCharacterTextSplitter({
+    chunkSize: 1000,
+    chunkOverlap: 200,
+  });
+
+  const docs = await splitter.createDocuments(
+    [content],
+    [
+      {
+        filepath,
+        repo: `${repoInfo.owner}/${repoInfo.repo}`,
+      },
+    ]
+  );
+
+  // Create embeddings and store in Pinecone
+  const vectors = await Promise.all(
+    docs.map(async (doc, i) => {
+      const embedding = await embedder.embedQuery(doc.pageContent);
+
+      // Flatten and filter metadata
+      const metadata = {
+        filepath: String(doc.metadata.filepath || ""),
+        repo: String(doc.metadata.repo || ""),
+        content: String(doc.pageContent || ""),
+        chunk_index: String(i),
+        ...(doc.metadata.loc?.lines
+          ? {
+              line_range: `${doc.metadata.loc.lines.from || ""}-${
+                doc.metadata.loc.lines.to || ""
+              }`,
+            }
+          : {}),
+      };
+
+      return {
+        id: `${filepath}-${i}`,
+        values: embedding,
+        metadata: Object.fromEntries(
+          Object.entries(metadata).filter(
+            ([_, value]) => typeof value === "string" && value !== ""
+          )
+        ),
+      };
+    })
+  );
+
+  await index.upsert(vectors);
+};
+
+export const getRelevantCodeContext = async (query: string) => {
+  const index = pinecone.Index("code-embeddings");
+
+  // Create embedding for the query
+  const queryEmbedding = await embedder.embedQuery(query);
+
+  // Search Pinecone for similar code snippets
+  const results = await index.query({
+    vector: queryEmbedding,
+    topK: 5,
+    includeMetadata: true,
+  });
+
+  // Format results
+  return results.matches.map((match) => ({
+    content: match.metadata.content,
+    filepath: match.metadata.filepath,
+    repo: match.metadata.repo,
+    score: match.score,
+  }));
 };
