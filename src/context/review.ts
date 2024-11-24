@@ -1,12 +1,14 @@
 import {
   AbstractParser,
   PRFile,
+  PRSuggestion,
   PatchInfo,
   getParserForExtension,
 } from "../constants";
 import * as diff from "diff";
 import { JavascriptParser } from "./language/javascript-parser";
 import { Node } from "@babel/traverse";
+import { getRelevantCodeContext } from "../reviews";
 
 const expandHunk = (
   contents: string,
@@ -275,11 +277,38 @@ const functionContextPatchStrategy = (
   return res;
 };
 
-export const smarterContextPatchStrategy = (file: PRFile) => {
-  const parser: AbstractParser = getParserForExtension(file.filename);
-  if (parser != null) {
-    return functionContextPatchStrategy(file, parser);
-  } else {
+export const smarterContextPatchStrategy = async (
+  file: PRFile,
+  suggestion: PRSuggestion | null
+) => {
+  try {
+    const relevantContext = await getRelevantCodeContext(
+      file.current_contents || ""
+    );
+    const contextString = relevantContext
+      .filter((ctx) => ctx.score > 0.8) // Only use highly relevant matches
+      .map(
+        (ctx) => `
+Related code from ${ctx.filepath}:
+\`\`\`
+${ctx.content}
+\`\`\`
+`
+      )
+      .join("\n");
+
+    // Get the function-level context
+    const parser = getParserForExtension(file.filename);
+    let functionContext = "";
+    if (parser) {
+      functionContext = functionContextPatchStrategy(file, parser);
+    } else {
+      functionContext = expandedPatchStrategy(file);
+    }
+
+    return `## ${file.filename}\n\n${functionContext}\n\n${contextString}`;
+  } catch (exc) {
+    console.log("Error in smarterContextPatchStrategy:", exc);
     return expandedPatchStrategy(file);
   }
 };

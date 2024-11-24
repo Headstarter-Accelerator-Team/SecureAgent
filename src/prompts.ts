@@ -6,6 +6,7 @@ import {
   smarterContextPatchStrategy,
 } from "./context/review";
 import { GROQ_MODEL, type GroqChatModel } from "./llms/groq";
+import { getContextForReview } from "./reviews";
 
 const ModelsToTokenLimits: Record<GroqChatModel, number> = {
   "mixtral-8x7b-32768": 32768,
@@ -53,6 +54,8 @@ Don't repeat the prompt in the answer, and avoid outputting the 'type' and 'desc
 Think through your suggestions and make exceptional improvements.`;
 
 export const XML_PR_REVIEW_PROMPT = `As the PR-Reviewer AI model, you are tasked to analyze git pull requests across any programming language and provide comprehensive and precise code enhancements. Keep your focus on the new code modifications indicated by '+' lines in the PR. Your feedback should hunt for code issues, opportunities for performance enhancement, security improvements, and ways to increase readability. 
+
+Before providing specific suggestions, start with a brief summary paragraph that explains what the changes do and their impact on the codebase. This summary should be concise and focus on the key modifications and their purpose.
 
 Ensure your suggestions are novel and haven't been previously incorporated in the '+' lines of the PR code. Refrain from proposing enhancements that add docstrings, type hints, or comments. Your recommendations should strictly target the '+' lines without suggesting the need for complete context such as the whole repo or codebase.
 
@@ -123,7 +126,7 @@ export const buildPatchPrompt = (file: PRFile) => {
   if (file.old_contents == null) {
     return rawPatchStrategy(file);
   } else {
-    return smarterContextPatchStrategy(file);
+    return smarterContextPatchStrategy(file, null);
   }
 };
 
@@ -134,21 +137,42 @@ export const getReviewPrompt = (diff: string): ChatCompletionMessageParam[] => {
   ];
 };
 
-export const getXMLReviewPrompt = (
-  diff: string
-): ChatCompletionMessageParam[] => {
-  return [
-    { role: "system", content: XML_PR_REVIEW_PROMPT },
-    { role: "user", content: diff },
-  ];
+export const getXMLReviewPrompt = async (files: PRFile[]) => {
+  const relevantContext = await getContextForReview(files);
+
+  const contextString = relevantContext
+    .map(
+      (ctx) => `
+Related code for ${ctx.filename}:
+${ctx.similarCode
+  .map(
+    (code) => `
+In ${code.filepath}:
+\`\`\`
+${code.content}
+\`\`\`
+`
+  )
+  .join("\n")}
+`
+    )
+    .join("\n");
+
+  return `${REVIEW_DIFF_PROMPT}
+
+Here is some relevant context from the codebase that might help with the review:
+
+${contextString}
+
+Please consider this context when making suggestions, especially for maintaining consistency with existing patterns and implementations.`;
 };
 
-export const constructPrompt = (
+export const constructPrompt = async (
   files: PRFile[],
-  patchBuilder: (file: PRFile) => string,
+  patchBuilder: (file: PRFile) => string | Promise<string>,
   convoBuilder: (diff: string) => ChatCompletionMessageParam[]
 ) => {
-  const patches = files.map((file) => patchBuilder(file));
+  const patches = await Promise.all(files.map((file) => patchBuilder(file)));
   const diff = patches.join("\n");
   const convo = convoBuilder(diff);
   return convo;

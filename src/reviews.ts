@@ -2,6 +2,7 @@ import {
   BranchDetails,
   BuilderResponse,
   CodeSuggestion,
+  PRFile,
   Review,
   processGitFilepath,
 } from "./constants";
@@ -124,6 +125,11 @@ export const getGitFile = async (
         },
       }
     );
+
+    // Check if response.data is a single file (not an array)
+    if (Array.isArray(response.data) || !("content" in response.data)) {
+      return { content: null, sha: null };
+    }
     //@ts-ignore
     const decodedContent = Buffer.from(
       response.data.content,
@@ -316,4 +322,29 @@ export const getRelevantCodeContext = async (query: string) => {
     repo: match.metadata.repo,
     score: match.score,
   }));
+};
+
+export const getContextForReview = async (files: PRFile[]) => {
+  const contexts = await Promise.all(
+    files.map(async (file) => {
+      // Use the new code content as query to find similar code
+      const query = file.current_contents || "";
+      const relevantCode = await getRelevantCodeContext(query);
+
+      return {
+        filename: file.filename,
+        similarCode: relevantCode
+          .filter(
+            (code) =>
+              // Filter out the same file
+              code.filepath !== file.filename &&
+              // Keep only highly relevant results
+              code.score > 0.8
+          )
+          .slice(0, 3), // Keep top 3 most relevant
+      };
+    })
+  );
+
+  return contexts.filter((ctx) => ctx.similarCode.length > 0);
 };
