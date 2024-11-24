@@ -56,7 +56,6 @@ const filterFile = (file: PRFile) => {
     "mp4",
     "mp3",
     "md",
-    "json",
     "env",
     "toml",
     "svg",

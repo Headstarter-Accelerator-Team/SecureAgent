@@ -6,7 +6,7 @@ import { App } from "octokit";
 import { Review } from "./constants";
 import { env } from "./env";
 import { processPullRequest } from "./review-agent";
-import { applyReview } from "./reviews";
+import { applyReview, processAllRepoFiles } from "./reviews";
 
 // This creates a new instance of the Octokit App class.
 const reviewApp = new App({
@@ -46,14 +46,17 @@ async function handlePullRequestOpened({
   console.log(
     `Received a pull request event for #${payload.pull_request.number}`
   );
-  // const reposWithInlineEnabled = new Set<number>([601904706, 701925328]);
-  // const canInlineSuggest = reposWithInlineEnabled.has(payload.repository.id);
   try {
     console.log("pr info", {
       id: payload.repository.id,
       fullName: payload.repository.full_name,
       url: payload.repository.html_url,
     });
+
+    // First, process all files in the target branch
+    await processAllRepoFiles(octokit, payload);
+
+    // Then process the PR files
     const files = await getChangesPerFile(payload);
     const review: Review = await processPullRequest(
       octokit,

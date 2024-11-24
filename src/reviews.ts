@@ -250,6 +250,7 @@ const storeCodeInPinecone = async (
   repoInfo: { owner: string; repo: string }
 ) => {
   const index = pinecone.Index("code-embeddings");
+  const namespace = "code files"; // Fixed namespace
 
   // Split code into chunks
   const splitter = new RecursiveCharacterTextSplitter({
@@ -271,6 +272,13 @@ const storeCodeInPinecone = async (
   const vectors = await Promise.all(
     docs.map(async (doc, i) => {
       const embedding = await embedder.embedQuery(doc.pageContent);
+      console.log(`Embedding created for ${doc.metadata.filepath}`);
+
+      // Extract additional metadata
+      const functionMetadata = extractFunctionMetadata(doc.pageContent);
+      const functionName = functionMetadata?.name || "";
+      const functionParams = functionMetadata?.params.join(", ") || "";
+      const returnType = functionMetadata?.returnType || "";
 
       // Flatten and filter metadata
       const metadata = {
@@ -278,6 +286,9 @@ const storeCodeInPinecone = async (
         repo: String(doc.metadata.repo || ""),
         content: String(doc.pageContent || ""),
         chunk_index: String(i),
+        function_name: functionName,
+        function_params: functionParams,
+        return_type: returnType,
         ...(doc.metadata.loc?.lines
           ? {
               line_range: `${doc.metadata.loc.lines.from || ""}-${
@@ -299,23 +310,24 @@ const storeCodeInPinecone = async (
     })
   );
 
-  await index.upsert(vectors);
+  console.log(
+    `Upserting ${vectors.length} vectors to Pinecone under namespace "code files"`
+  );
+  await index.namespace(namespace).upsert(vectors); // Add namespace here
 };
 
 export const getRelevantCodeContext = async (query: string) => {
   const index = pinecone.Index("code-embeddings");
+  const namespace = "code files";
 
-  // Create embedding for the query
   const queryEmbedding = await embedder.embedQuery(query);
 
-  // Search Pinecone for similar code snippets
-  const results = await index.query({
+  const results = await index.namespace(namespace).query({
     vector: queryEmbedding,
-    topK: 5,
+    topK: 20,
     includeMetadata: true,
   });
 
-  // Format results
   return results.matches.map((match) => ({
     content: match.metadata.content,
     filepath: match.metadata.filepath,
@@ -347,4 +359,137 @@ export const getContextForReview = async (files: PRFile[]) => {
   );
 
   return contexts.filter((ctx) => ctx.similarCode.length > 0);
+};
+
+// Define the extractFunctionName function
+const extractFunctionName = (code: string): string | null => {
+  const functionMatch = code.match(/function\s+([a-zA-Z0-9_]+)/);
+  return functionMatch ? functionMatch[1] : null;
+};
+
+// Define the extractClassName function
+const extractClassName = (code: string): string | null => {
+  const classMatch = code.match(/class\s+([a-zA-Z0-9_]+)/);
+  return classMatch ? classMatch[1] : null;
+};
+
+const extractFunctionMetadata = (
+  code: string
+): { name: string; params: string[]; returnType: string } | null => {
+  const functionMatch = code.match(
+    /function\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)\s*:\s*([a-zA-Z0-9_]+)/
+  );
+  if (functionMatch) {
+    const [, name, params, returnType] = functionMatch;
+    return {
+      name,
+      params: params.split(",").map((param) => param.trim()),
+      returnType,
+    };
+  }
+  return null;
+};
+
+// Function to list all files in a repository
+const listAllFilesInRepo = async (
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  path = ""
+): Promise<string[]> => {
+  const files = [];
+  const { data: repoContent } = await octokit.rest.repos.getContent({
+    owner,
+    repo,
+    path,
+  });
+
+  if (Array.isArray(repoContent)) {
+    for (const item of repoContent) {
+      if (item.type === "file") {
+        files.push(item.path);
+      } else if (item.type === "dir") {
+        const subDirFiles = await listAllFilesInRepo(
+          octokit,
+          owner,
+          repo,
+          item.path
+        );
+        files.push(...subDirFiles);
+      }
+    }
+  } else if (repoContent.type === "file") {
+    files.push(repoContent.path);
+  }
+  return files;
+};
+
+const filterEmbeddingFile = (filepath: string): boolean => {
+  const extensionsToInclude = new Set<string>([
+    "ts",
+    "tsx",
+    "js",
+    "jsx",
+    "py",
+    "java",
+    "cpp",
+    "c",
+    "cs",
+    "go",
+    "rs",
+    "php",
+    "rb",
+    "swift",
+    "kt",
+  ]);
+
+  const splitFilename = filepath.toLowerCase().split(".");
+  if (splitFilename.length <= 1) {
+    console.log(`Filtering out file with no extension: ${filepath}`);
+    return false;
+  }
+
+  const extension = splitFilename.pop()?.toLowerCase();
+  if (!extension || !extensionsToInclude.has(extension)) {
+    console.log(`Filtering out non-code file: ${filepath} (.${extension})`);
+    return false;
+  }
+  return true;
+};
+
+// Function to process all files in the repository
+export const processAllRepoFiles = async (
+  octokit: Octokit,
+  payload: WebhookEventMap["pull_request"]
+) => {
+  const owner = payload.repository.owner.login;
+  const repo = payload.repository.name;
+
+  const files = await listAllFilesInRepo(octokit, owner, repo);
+  const filteredFiles = files.filter(filterEmbeddingFile);
+
+  // Fetch the default branch details dynamically
+  const { data: repoData } = await octokit.rest.repos.get({
+    owner,
+    repo,
+  });
+
+  const { data: ref } = await octokit.rest.git.getRef({
+    owner,
+    repo,
+    ref: `heads/${repoData.default_branch}`,
+  });
+
+  const branchDetails: BranchDetails = {
+    name: repoData.default_branch,
+    sha: ref.object.sha,
+    url: `https://github.com/${owner}/${repo}/tree/${repoData.default_branch}`,
+  };
+
+  for (const filepath of filteredFiles) {
+    const gitFile = await getGitFile(octokit, payload, branchDetails, filepath);
+    if (gitFile.content) {
+      await storeCodeInPinecone(filepath, gitFile.content, { owner, repo });
+    }
+  }
 };
