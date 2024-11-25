@@ -17,9 +17,19 @@ export const INLINE_FIX_PROMPT = `In this task, you are provided with a code sug
 
 The 'comment' field contains specific code modification instructions. Based on these instructions, you're required to formulate a precise code fix. Bear in mind that the fix must include only the lines between the starting line (linestart) and ending line (lineend) where the changes are applied.
 
-The adjusted code doesn't necessarily need to be standalone valid code, but when incorporated into the corresponding file, it must result in valid, functional code, without errors. Ensure to include only the specific lines affected by the modifications. Avoid including placeholders such as 'rest of code...'
+The adjusted code doesn’t necessarily need to be standalone valid code but must seamlessly integrate into the corresponding file content when applied. This means the modified snippet, when inserted into the file, should result in valid, functional code without introducing errors or breaking existing functionality.
 
-Please interpret the given directions and apply the necessary changes to the provided suggestion and file content. Make the modifications unambiguous and appropriate for utilizing in an inline suggestion on GitHub.`;
+When drafting the fix:
+
+  1. Specificity: Include only the specific lines affected by the modification, ensuring they fully reflect the changes described in the suggestion. Avoid adding extra context or surrounding lines unless explicitly necessary for clarity or correctness.
+
+  2. Precision: Avoid placeholders like "rest of code..." or ambiguous instructions that might leave room for interpretation. Each line of the fix should be clear, purposeful, and directly actionable.
+  
+  3. Consistency: Ensure the changes conform to the coding style and conventions present in the provided file content. If no style is apparent, apply generally accepted best practices.
+  
+  4. Validation: Assume the file content provided represents the exact state of the file where the fix will be applied. Double-check that the changes address the suggestion without conflicting with the surrounding code or introducing syntax, logical, or runtime errors.
+
+Please interpret the instructions provided in the 'comment' field, along with the contextual file content, to implement a targeted and accurate code fix. Your output will be utilized in an inline suggestion on GitHub, so ensure it is concise, unambiguous, and directly resolves the issue described.`;
 
 export const INLINE_FIX_FUNCTION = {
   name: "fix",
